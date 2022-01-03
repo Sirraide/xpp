@@ -1,5 +1,5 @@
-#ifndef XPP_NATIVE_PARSER_H
-#define XPP_NATIVE_PARSER_H
+#ifndef XPP_PARSER_H
+#define XPP_PARSER_H
 
 #include <string>
 #include <utils/parser.h>
@@ -34,4 +34,4 @@ String StringiseType(const Parser::Token* token);
 
 } // namespace TeX
 
-#endif // XPP_NATIVE_PARSER_H
+#endif // XPP_PARSER_H

@@ -20,7 +20,7 @@ if test $# -ge 1; then
             ;;
         "clean")
             mkdir -p ./out
-            rm -rf ./out xpp-native
+            rm -rf ./out xpp
             exit 0
             ;;
         *)

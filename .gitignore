@@ -1,3 +1,4 @@
 .idea/
 out/
-xpp-native
+xpp
+*.tex

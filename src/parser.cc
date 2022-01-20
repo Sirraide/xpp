@@ -27,7 +27,7 @@ Parser::Parser(const Clopts& _opts) : LexerBase(_opts["filename"].AsString()), o
         exit(0);
     }
     Parser::Parse();
-    if (!has_error) Parser::EmitNodes(tokens);
+    if (!has_error) Parser::Emit();
 }
 
 void Parser::LexLineComment() {
@@ -75,6 +75,13 @@ void Parser::LexText() {
 }
 
 void Parser::NextToken() {
+    if (!lookahead_queue.empty()) {
+        at_eof = false;
+        token  = std::move(lookahead_queue.front());
+        lookahead_queue.pop();
+        return;
+    }
+
     token     = Token();
     token.loc = Here();
 
@@ -149,21 +156,48 @@ NodeList Parser::ParseGroup(bool in_macrodef) {
 
     if (at_eof) Error(here, "Group terminated by end of file");
     if (token.type != TokenType::GroupEnd) Unreachable("ParseGroup");
-    group_count--;
     NextToken(); /// yeet '}'
 
     return lst;
 }
 
 void Parser::ParseCommandSequence() {
-    if (token.string_content == U"\\XDefine") {
-        NextToken(); /// yeet '\XDefine'
+    if (token.string_content == U"\\Define") {
+        NextToken(); /// yeet '\Define'
         Expect(TokenType::CommandSequence);
         String cs = token.string_content;
-
         NextToken(); /// yeet csname
         auto group = ParseGroup(true);
         macros[cs] = group;
+    } else if (token.string_content == U"\\Undef") {
+        NextToken(); /// yeet '\Undef'
+        Expect(TokenType::CommandSequence);
+        if (macros.contains(token.string_content)) macros.erase(token.string_content);
+        NextToken(); /// yeet cs
+    } else if (token.string_content == U"\\Replace") {
+        if (!at_eof && lastc == U'*') {
+            NextChar(); /// yeet '*'
+            if (at_eof) LEXER_ERROR("Unterminated \\Replace*");
+            if (lastc != '|') LEXER_ERROR("Syntax of \\Replace* is \\Replace*|text|replacement|");
+            NextChar(); /// yeet '|'
+            String text = ReadUntilChar(U'|');
+            if (at_eof) LEXER_ERROR("Syntax of \\Replace* is \\Replace*|text|replacement|");
+            NextChar(); /// yeet '|'
+            String replacement = ReadUntilChar(U'|');
+            if (at_eof) LEXER_ERROR("Syntax of \\Replace* is \\Replace*|text|replacement|");
+            NextChar(); /// yeet '|'
+            raw_rep_rules.processed.emplace_back(text, replacement);
+            NextToken();
+        } else {
+            NextToken(); /// yeet '\Replace'
+            auto text        = ParseGroup(true);
+            auto replacement = ParseGroup(true);
+            rep_rules.rules.emplace_back(text, replacement);
+        }
+    } else if (macros.contains(token.string_content)) {
+        for (const auto& tok : macros[token.string_content])
+            lookahead_queue.push(tok);
+        NextToken(); /// yeet expanded macro
     }
 }
 
@@ -171,26 +205,87 @@ void Parser::Expect(TokenType type) {
     if (token.type != type) Error(Here(), "Expected token type %d, but was %d", int(type), int(token.type));
 }
 
-void Parser::EmitNodes(const NodeList& nodes) {
+void Parser::Emit() {
+    ProcessReplacementRules();
+    ProcessReplacement(tokens);
+    ConstructText(tokens);
+    ApplyRawReplacementRules();
+    fmt::print(output_file, "{}", ToUTF8(processed_text));
+}
+
+void Parser::ConstructText(NodeList& nodes) {
     using enum TokenType;
-    for (const auto& node : nodes) {
+    for (auto& node : nodes) {
         switch (node.type) {
             case GroupBegin:
-                fmt::print(output_file, "{{");
+                processed_text += U'{';
                 break;
             case GroupEnd:
-                fmt::print(output_file, "}}");
+                processed_text += U'}';
                 break;
             case CommandSequence:
-                if (macros.contains(node.string_content)) EmitNodes(macros[node.string_content]);
-                else fmt::print(output_file, "{}", ToUTF8(node.string_content));
+                if (macros.contains(node.string_content))
+                    Unreachable("ConstructText: Unexpanded macro \'"
+                                << ToUTF8(node.string_content) << "\'");
+                // ConstructText(macros[node.string_content]);
+                else processed_text += node.string_content;
                 break;
             case Macro:
-                Unreachable("EmitNodes: Macro should have been removed from NodeList");
+                Unreachable("ConstructText: Macro should have been removed from NodeList");
             default:
-                fmt::print(output_file, "{}", ToUTF8(node.string_content));
+                processed_text += node.string_content;
         }
     }
+}
+
+void Parser::ApplyReplacementRules(String& str) {
+    for (const auto& [text, replacement] : rep_rules.processed)
+        ReplaceAll(str, text, replacement);
+}
+
+void Parser::ApplyRawReplacementRules() {
+    for (const auto& [text, replacement] : raw_rep_rules.processed)
+        ReplaceAll(processed_text, text, replacement);
+}
+
+void Parser::ProcessReplacement(NodeList& nodes) {
+    using enum TokenType;
+    for (auto& node : nodes) {
+        switch (node.type) {
+            case Text:
+                ApplyReplacementRules(node.string_content);
+            default:
+                continue;
+        }
+    }
+}
+
+String Parser::AsTextNode(const NodeList& lst) {
+    using enum TokenType;
+    String text;
+    for (const auto& node : lst) {
+        switch (node.type) {
+            case Text:
+                text.append(node.string_content);
+                break;
+            case CommandSequence:
+                if (macros.contains(node.string_content))
+                    text.append(AsTextNode(macros[node.string_content]));
+                else goto _default;
+                break;
+            default:
+            _default:
+                Die("Serialisation of type %d is not implemented", int(node.type));
+        }
+    }
+    return text;
+}
+
+void Parser::ProcessReplacementRules() {
+    for (const auto& [text, replacement] : rep_rules.rules)
+        rep_rules.processed.emplace_back(AsTextNode(text), AsTextNode(replacement));
+    for (const auto& [text, replacement] : raw_rep_rules.rules)
+        raw_rep_rules.processed.emplace_back(AsTextNode(text), AsTextNode(replacement));
 }
 
 String StringiseType(const Node& token) {

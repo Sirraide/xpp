@@ -56,7 +56,7 @@ struct Parser : public AbstractLexer {
     void     Emit();
     void     Expect(TokenType type);
     void     ParseToken();
-    NodeList ParseGroup(bool in_macrodef = false);
+    NodeList ParseGroup(bool keep_closing_brace = false);
     void     ParseCommandSequence();
     void     ConstructText(NodeList& nodes);
     void     ParseSequence();
@@ -65,6 +65,7 @@ struct Parser : public AbstractLexer {
     String   AsTextNode(const NodeList& lst);
     void     ApplyReplacementRules(String& str);
     void     ApplyRawReplacementRules();
+    void     HandleReplace();
 };
 
 String StringiseType(const Node& token);

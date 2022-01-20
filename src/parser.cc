@@ -1,5 +1,6 @@
 #include "parser.h"
 
+#include <filesystem>
 #include <fmt/format.h>
 
 namespace TeX {
@@ -128,7 +129,7 @@ void Parser::ParseSequence() {
     }
 }
 
-NodeList Parser::ParseGroup(bool in_macrodef) {
+NodeList Parser::ParseGroup(bool keep_closing_brace) {
     Expect(TokenType::GroupBegin);
     group_count++;
     auto here = Here();
@@ -139,15 +140,14 @@ NodeList Parser::ParseGroup(bool in_macrodef) {
     NodeList lst;
     U64      depth = group_count;
     while (!at_eof) {
-        if (in_macrodef)
-            for (;;) {
-                if (token.type != TokenType::LineComment) break;
-                do NextToken();
-                while (token.type == TokenType::LineComment);
-                if (token.type == TokenType::Text) {
-                    TrimInitial(token.string_content);
-                }
+        for (;;) {
+            if (token.type != TokenType::LineComment) break;
+            do NextToken();
+            while (token.type == TokenType::LineComment);
+            if (token.type == TokenType::Text) {
+                TrimInitial(token.string_content);
             }
+        }
         ParseSequence();
         if (token.type == TokenType::GroupEnd && group_count < depth) break;
         lst.push_back(token);
@@ -156,9 +156,31 @@ NodeList Parser::ParseGroup(bool in_macrodef) {
 
     if (at_eof) Error(here, "Group terminated by end of file");
     if (token.type != TokenType::GroupEnd) Unreachable("ParseGroup");
-    NextToken(); /// yeet '}'
+    if (!keep_closing_brace) NextToken(); /// yeet '}'
 
     return lst;
+}
+
+void Parser::HandleReplace() {
+    if (!at_eof && lastc == U'*') {
+        NextChar(); /// yeet '*'
+        if (at_eof) LEXER_ERROR("Unterminated \\Replace*");
+        if (lastc != '|') LEXER_ERROR("Syntax of \\Replace* is \\Replace*|text|replacement|");
+        NextChar(); /// yeet '|'
+        String text = ReadUntilChar(U'|');
+        if (at_eof) LEXER_ERROR("Syntax of \\Replace* is \\Replace*|text|replacement|");
+        NextChar(); /// yeet '|'
+        String replacement = ReadUntilChar(U'|');
+        if (at_eof) LEXER_ERROR("Syntax of \\Replace* is \\Replace*|text|replacement|");
+        NextChar(); /// yeet '|'
+        raw_rep_rules.processed.emplace_back(text, replacement);
+        NextToken();
+    } else {
+        NextToken(); /// yeet '\Replace'
+        auto text        = ParseGroup();
+        auto replacement = ParseGroup();
+        rep_rules.rules.emplace_back(text, replacement);
+    }
 }
 
 void Parser::ParseCommandSequence() {
@@ -167,7 +189,7 @@ void Parser::ParseCommandSequence() {
         Expect(TokenType::CommandSequence);
         String cs = token.string_content;
         NextToken(); /// yeet csname
-        auto group = ParseGroup(true);
+        auto group = ParseGroup();
         macros[cs] = group;
     } else if (token.string_content == U"\\Undef") {
         NextToken(); /// yeet '\Undef'
@@ -175,25 +197,12 @@ void Parser::ParseCommandSequence() {
         if (macros.contains(token.string_content)) macros.erase(token.string_content);
         NextToken(); /// yeet cs
     } else if (token.string_content == U"\\Replace") {
-        if (!at_eof && lastc == U'*') {
-            NextChar(); /// yeet '*'
-            if (at_eof) LEXER_ERROR("Unterminated \\Replace*");
-            if (lastc != '|') LEXER_ERROR("Syntax of \\Replace* is \\Replace*|text|replacement|");
-            NextChar(); /// yeet '|'
-            String text = ReadUntilChar(U'|');
-            if (at_eof) LEXER_ERROR("Syntax of \\Replace* is \\Replace*|text|replacement|");
-            NextChar(); /// yeet '|'
-            String replacement = ReadUntilChar(U'|');
-            if (at_eof) LEXER_ERROR("Syntax of \\Replace* is \\Replace*|text|replacement|");
-            NextChar(); /// yeet '|'
-            raw_rep_rules.processed.emplace_back(text, replacement);
-            NextToken();
-        } else {
-            NextToken(); /// yeet '\Replace'
-            auto text        = ParseGroup(true);
-            auto replacement = ParseGroup(true);
-            rep_rules.rules.emplace_back(text, replacement);
-        }
+        HandleReplace();
+    } else if (token.string_content == U"\\Include") {
+        NextToken(); /// yeet '\Include'
+        auto group = ParseGroup(true);
+        IncludeFile(ToUTF8(AsTextNode(group)));
+        NextToken();
     } else if (macros.contains(token.string_content)) {
         for (const auto& tok : macros[token.string_content])
             lookahead_queue.push(tok);

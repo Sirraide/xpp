@@ -14,10 +14,11 @@ target_compile_options(xpp PRIVATE
         -Wno-gnu-zero-variadic-macro-arguments -Wno-dollar-in-identifier-extension
         -fcoroutines)
 if (${CMAKE_CXX_COMPILER} STREQUAL "clang++")
-    target_compile_options(xpp PRIVATE -Xclang -fcolor-diagnostics)
+    target_compile_options(xpp PRIVATE -Xclang -fcolor-diagnostics )
 endif ()
 if (${CMAKE_BUILD_TYPE} STREQUAL "Release")
     target_compile_options(xpp PRIVATE -O3)
 else ()
-    target_compile_options(xpp PRIVATE -O0 -ggdb)
+    target_compile_options(xpp PRIVATE -O0 -ggdb -fsanitize=address)
+    target_link_options(xpp PRIVATE -fsanitize=address)
 endif ()

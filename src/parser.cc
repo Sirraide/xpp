@@ -2,7 +2,7 @@
 
 #include <filesystem>
 #include <fmt/format.h>
-
+#include <variant>
 namespace TeX {
 bool IsSpace(U32 c) {
     return c == U32(' ') || c == U32('\t') || c == U32('\n')
@@ -99,7 +99,7 @@ void Parser::LexText() {
 
 void Parser::NextToken() {
     if (!lookahead_queue.empty()) {
-        token  = std::move(lookahead_queue.front());
+        token = std::move(lookahead_queue.front());
         lookahead_queue.pop();
         return;
     }
@@ -112,7 +112,7 @@ void Parser::NextToken() {
         return;
     }
 
-    if(I32(lastc) == EOF) Die("NextToken: at_eof not set at end of file!");
+    if (I32(lastc) == EOF) Die("NextToken: at_eof not set at end of file!");
 
     token.type = TokenType(lastc);
     switch (lastc) {
@@ -437,23 +437,23 @@ std::string Parser::TokenTypeToString(TokenType type) {
 }
 
 void Parser::MergeTextNodes(NodeList& lst) {
-    /*    using enum TokenType;
-        for (U64 i = 0; i < lst.size(); i++) {
+    using enum TokenType;
+    for (U64 i = 0; i < lst.size(); i++) {
+        if (lst[i].type == Text) {
+            U64 start = i++;
+            if (i == lst.size()) break;
             if (lst[i].type == Text) {
-                U64 start = i++;
-                if(i == lst.size()) break;
-                if (lst[i].type == Text) {
-                    Token node;
-                    node.type           = TokenType::Text;
-                    node.string_content = lst[i - 1].string_content;
-                    do node.string_content += lst[++i].string_content;
-                    while (i < lst.size() && lst[i].type == Text);
-                    lst.erase(lst.begin() + I64(start), lst.begin() + I64(i - start));
-                    lst.insert(lst.begin() + I64(start), node);
-                    i = start;
-                }
+                Token node;
+                node.type           = TokenType::Text;
+                node.string_content = lst[i - 1].string_content;
+                do node.string_content += lst[i++].string_content;
+                while (i < lst.size() && lst[i].type == Text);
+                lst.erase(lst.begin() + I64(start), lst.begin() + I64(i));
+                lst.insert(lst.begin() + I64(start), node);
+                i = start;
             }
-        }*/
+        }
+    }
 }
 
 void Parser::LexMacroArg() {

@@ -108,7 +108,7 @@ void Parser::NextToken() {
     token.loc = Here();
 
     if (at_eof) {
-        token.type = TokenType::EndOfFile;
+        token.type     = TokenType::EndOfFile;
         return;
     }
 
@@ -439,15 +439,15 @@ std::string Parser::TokenTypeToString(TokenType type) {
 void Parser::MergeTextNodes(NodeList& lst) {
     using enum TokenType;
     for (U64 i = 0; i < lst.size(); i++) {
-        if (lst[i].type == Text) {
+        if (lst[i].type == Text || lst[i].type == Whitespace) {
             U64 start = i++;
             if (i == lst.size()) break;
-            if (lst[i].type == Text) {
+            if (lst[i].type == Text || lst[i].type == Whitespace) {
                 Token node;
-                node.type           = TokenType::Text;
+                node.type           = Text;
                 node.string_content = lst[i - 1].string_content;
                 do node.string_content += lst[i++].string_content;
-                while (i < lst.size() && lst[i].type == Text);
+                while (i < lst.size() && (lst[i].type == Text || lst[i].type == Whitespace));
                 lst.erase(lst.begin() + I64(start), lst.begin() + I64(i));
                 lst.insert(lst.begin() + I64(start), node);
                 i = start;
@@ -518,9 +518,14 @@ void Parser::HandleMacroExpansion() {
             const U64 offset = tok.number % 10 - 1;
             if (offset >= args.size())
                 Fatal(here, "Macro arg index too big: %zu; size was: %zu", offset, args.size());
-            for (const auto& node : args[offset]) lookahead_queue.push(node);
-        } else lookahead_queue.push(tok);
+            for (const auto& node : args[offset]) PushLookahead(node);
+        } else PushLookahead(tok);
     }
+}
+
+void Parser::PushLookahead(const Node& node) {
+    lookahead_queue.push(node);
+    if (token.type == TokenType::EndOfFile) NextToken();
 }
 
 String Node::Str() const {

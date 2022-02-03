@@ -30,6 +30,20 @@ Parser::Parser(const Clopts& _opts) : LexerBase(_opts["filename"].AsString()), o
     if (opts["--print-tokens"].Found()) {
         Parser::PrintAllTokens(output_file);
         exit(0);
+    } else if (opts["--wc"].Found()) {
+        U64         chars{};
+        U64         words = 1;
+        std::string text;
+        do {
+            if (token.type == T::Text || token.type == T::Whitespace) {
+                chars++;
+                if (token.type == T::Whitespace) words++;
+            }
+            NextToken();
+        } while (token.type != T::EndOfFile);
+        std::cout << "Number of characters: " << chars << "\n";
+        std::cout << "Number of words:      " << words << "\n";
+        exit(0);
     }
     Parser::Parse();
     if (!has_error) Parser::Emit();
@@ -108,7 +122,7 @@ void Parser::NextToken() {
     token.loc = Here();
 
     if (at_eof) {
-        token.type     = TokenType::EndOfFile;
+        token.type = TokenType::EndOfFile;
         return;
     }
 
@@ -398,7 +412,7 @@ String StringiseType(const Node& token) {
     s += U": ";
     switch (token.type) {
         case Invalid: s += U"[Invalid: "; break;
-        case Whitespace:
+        case Whitespace: s += U"[Whitespace: "; break;
         case Text: s += U"[Text: "; break;
         case EndOfFile: s += U"[EndOfFile]\n"; return s;
         case CommandSequence: s += U"[CommandSequence: "; break;

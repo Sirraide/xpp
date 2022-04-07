@@ -2,15 +2,7 @@
 
 #include <clocale>
 
-Clopts opts{
-    {"-o", "The file to output to"},
-    {"filename", "The file to be processed", CT::String, true, true},
-    {"--print-tokens", "Print all tokens to stdout and exit", CT::Void},
-    {"--wc", "Count the number of characters and words in the file", CT::Void}
-};
-
 int main(int argc, char** argv) {
     setlocale(LC_ALL, "");
-    opts.Parse(argc, argv);
-    TeX::Parser p{opts};
+    TeX::Parser p{TeX::Parser::options::parse(argc, argv)};
 }

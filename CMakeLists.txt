@@ -12,7 +12,7 @@ target_link_libraries(xpp PRIVATE utils fmt)
 target_compile_options(xpp PRIVATE
         -Wall -Wextra -Wundef -Werror=return-type -Wconversion -Wpedantic
         -Wno-gnu-zero-variadic-macro-arguments -Wno-dollar-in-identifier-extension
-        -fcoroutines)
+        -fdiagnostics-color=always -fcoroutines)
 if (${CMAKE_CXX_COMPILER} STREQUAL "clang++")
     target_compile_options(xpp PRIVATE -Xclang -fcolor-diagnostics )
 endif ()

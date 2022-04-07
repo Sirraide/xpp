@@ -1,10 +1,11 @@
 #ifndef XPP_PARSER_H
 #define XPP_PARSER_H
 
+#include "../clopts/include/clopts.hh"
+
 #include <map>
 #include <queue>
 #include <string>
-#include <utils/clopts.h>
 #include <utils/parser.h>
 
 namespace TeX {
@@ -45,9 +46,18 @@ struct Macro {
     Macro(std::vector<NodeList> delimiters, NodeList replacement);
 };
 
+namespace cl = command_line_options;
 struct Parser : public AbstractLexer {
-    const Clopts& opts;
-    explicit Parser(const Clopts& opts);
+    using options = cl::clopts<
+        cl::option<"-o", "The file to output to">,
+        cl::option<"-f", "The file to process", std::string, true>,
+        cl::flag<"--print-tokens", "Print all tokens to stdout and exit">,
+        cl::flag<"--wc", "Count the number of characters and words in the file">,
+        cl::flag<"--format", "Format a file instead of preprocessing it">,
+        cl::help>;
+    const options::parsed_options opts;
+
+    explicit Parser(const options::parsed_options& _opts);
     FILE*                   output_file;
     std::map<String, Macro> macros;
     ReplacementRules        rep_rules;
@@ -57,33 +67,35 @@ struct Parser : public AbstractLexer {
     std::queue<Node>        lookahead_queue;
     String                  processed_text;
 
-    String                AsTextNode(const NodeList& lst);
-    void                  ApplyReplacementRules(String& str);
-    void                  ApplyRawReplacementRules();
-    void                  ConstructText(NodeList& nodes);
-    void                  Emit();
-    void                  Expect(TokenType type);
-    void                  HandleDefine();
-    void                  HandleMacroExpansion();
-    void                  HandleReplace();
-    void                  LexCommandSequence();
-    void                  LexLineComment();
-    void                  LexMacroArg();
-    void                  LexText();
-    static void           MergeTextNodes(NodeList& lst);
-    void                  NextNonWhitespaceToken();
-    void                  NextToken() override;
-    void                  Parse();
-    void                  ParseCommandSequence();
-    NodeList              ParseGroup(bool keep_closing_brace = false);
-    std::vector<NodeList> ParseMacroArgs();
-    void                  ParseSequence();
-    void                  ProcessReplacement(NodeList& lst);
-    void                  ProcessReplacementRules();
-    void                  PushLookahead(const Node& node);
-    String                ReplaceReadUntilBrace();
-    void                  SkipCharsUntilIfWhitespace(Char c);
-    static std::string    TokenTypeToString(TokenType type);
+    void ApplyReplacementRules(String& str);
+    void ApplyRawReplacementRules();
+    auto AsTextNode(const NodeList& lst) -> String;
+    void ConstructText(NodeList& nodes);
+    void Emit();
+    void Expect(TokenType type);
+    void Format();
+    void HandleDefine();
+    void HandleMacroExpansion();
+    void HandleReplace();
+    void LexCommandSequence();
+    void LexLineComment();
+    void LexMacroArg();
+    void LexText();
+    void NextNonWhitespaceToken();
+    void NextToken() override;
+    void Parse();
+    void ParseCommandSequence();
+    auto ParseGroup(bool keep_closing_brace = false) -> NodeList;
+    auto ParseMacroArgs() -> std::vector<NodeList>;
+    void ParseSequence();
+    void ProcessReplacement(NodeList& lst);
+    void ProcessReplacementRules();
+    void PushLookahead(const Node& node);
+    auto ReplaceReadUntilBrace() -> String;
+    void SkipCharsUntilIfWhitespace(Char c);
+
+    static void MergeTextNodes(NodeList& lst);
+    static auto TokenTypeToString(TokenType type) -> std::string;
 };
 
 String StringiseType(const Node& token);

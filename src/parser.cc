@@ -20,17 +20,17 @@ Macro::Macro(NodeList _replacement) : replacement(std::move(_replacement)) {}
 Macro::Macro(std::vector<NodeList> _delimiters, NodeList _replacement)
     : replacement(std::move(_replacement)), delimiters(std::move(_delimiters)) {}
 
-Parser::Parser(const Clopts& _opts) : LexerBase(_opts["filename"].AsString()), opts(_opts) {
-    if (opts["-o"].Found()) output_file = fopen(opts["-o"].AsString().c_str(), "w");
+Parser::Parser(const options::parsed_options& _opts) : LexerBase(_opts.get<"-f">()), opts(_opts) {
+    if (opts.has<"-o">()) output_file = fopen(opts.get<"-o">().c_str(), "w");
     else output_file = stdout;
     if (!output_file) Die("Could not open output file: %s", strerror(errno));
 
     Parser::NextChar();
     Parser::NextToken();
-    if (opts["--print-tokens"].Found()) {
+    if (opts.has<"--print-tokens">()) {
         Parser::PrintAllTokens(output_file);
         exit(0);
-    } else if (opts["--wc"].Found()) {
+    } else if (opts.has<"--wc">()) {
         U64         chars{};
         U64         words = 1;
         std::string text;
@@ -45,8 +45,106 @@ Parser::Parser(const Clopts& _opts) : LexerBase(_opts["filename"].AsString()), o
         std::cout << "Number of words:      " << words << "\n";
         exit(0);
     }
+    if (opts.has<"--format">()) {
+        Parser::Format();
+        exit(0);
+    }
     Parser::Parse();
     if (!has_error) Parser::Emit();
+}
+
+void Parser::Format() {
+    std::string output;
+    U64         col{};
+    U64         indent_lvl{};
+    bool        has_ws = false;
+    auto        indent = [&] {
+        for (U64 i = 0; i < indent_lvl * 4; i++) output += " ";
+        has_ws = true;
+    };
+    std::stack<U64> envs;
+    while (token.type != TokenType::EndOfFile) {
+        if (token.type != T::Whitespace) has_ws = false;
+        switch (token.type) {
+            case T::EndOfFile:
+            case T::Invalid: Die("Invalid token");
+            case T::Text:
+                output += ToUTF8(token.string_content);
+                col++;
+                break;
+            case T::CommandSequence:
+                if (token.string_content == U"\\begin") {
+                    indent_lvl++;
+                    envs.push(0);
+                    if (col != 0) {
+                        output += "\n";
+                        col = 0;
+                        indent();
+                    }
+                } else if (token.string_content == U"\\end") {
+                    indent_lvl--;
+                    envs.push(0);
+                    if (col != 0) {
+                        output += "\n";
+                        col = 0;
+                        indent();
+                    }
+                }
+                col += token.string_content.size();
+                output += ToUTF8(token.string_content);
+                break;
+            case T::Macro:
+            case T::MacroArg:
+                col += token.string_content.size();
+                output += ToUTF8(token.string_content);
+                break;
+            case T::LineComment:
+                col = 0;
+                output += ToUTF8(token.string_content);
+                break;
+            case T::Whitespace: {
+                /// Count the number of newlines.
+                U64 newlines{};
+                for (auto c : token.string_content)
+                    if (c == '\n' && ++newlines == 2)
+                        break;
+                /// Two or more newlines are a paragraph break.
+                /// One is just whitespace.
+                if (newlines == 2) {
+                    output += "\n\n";
+                    indent();
+                    col = 0;
+                } else if (col > 100) {
+                    output += "\n";
+                    has_ws = true;
+                    col    = 0;
+                } else {
+                    if (!has_ws) output += " ";
+                    has_ws = true;
+                    col++;
+                    break;
+                }
+            } break;
+            case T::GroupBegin:
+                output += "{";
+                if (!envs.empty()) envs.top()++;
+                col++;
+                break;
+            case T::GroupEnd:
+                output += "}";
+                if (!envs.empty()) envs.top()--;
+                if (envs.top() == 0) {
+                    envs.pop();
+                    output += "\n";
+                    indent();
+                }
+                col++;
+                break;
+        }
+        NextToken();
+    }
+    output += "\n";
+    exit(fwrite(output.c_str(), output.size(), 1, output_file) != 1); /// 0 is true because exit code.
 }
 
 void Parser::LexLineComment() {

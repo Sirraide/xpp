@@ -1,0 +1,3 @@
+[submodule "clopts"]
+	path = clopts
+	url = https://github.com/Sirraide/clopts

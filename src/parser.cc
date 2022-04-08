@@ -100,6 +100,9 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
     /// together are on a single line or not.
     std::stack<def> def_stack{};
 
+    /// Used for formatting \if ... \fi.
+    std::stack<loc> if_stack{};
+
     /// This holds the line and column numbers of \begin elements.
     /// This is used to check whether the \begin and \end elements that belong
     /// together are on a single line or not.
@@ -134,10 +137,12 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
 
     /// Append a space to the output.
     auto Space = [&] {
-        last_ws_offset = I64(output.size());
-        output += " ";
-        has_ws = true;
-        col++;
+        if (col != 0) {
+            last_ws_offset = I64(output.size());
+            output += " ";
+            has_ws = true;
+            col++;
+        }
     };
 
     /// Count the number of line breaks in the current token.
@@ -149,6 +154,15 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
             if (c == '\n' && ++newlines == 2)
                 break;
         return newlines;
+    };
+
+    /// Append a line break to the output and yeet the next token if it's a line break.
+    auto ProvideNl = [&] [[nodiscard]] {
+        Next();
+        if (AtEnd()) return false;
+        discard = tokens[tok_index].type == T::Whitespace && TokenNewlines(tokens[tok_index]) == 1;
+        Nl();
+        return true;
     };
 
     auto FormatEnvBegin = [&] {
@@ -204,7 +218,7 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
             /// If the \begin and \end are not on the same line, insert a line break
             /// before the \begin and \end if they're not already on a new line.
             if (b_line != line) {
-                if (b_offset) output.insert(b_offset, "\n");
+                if (b_offset && output[b_offset - 1] != '\n') output.insert(b_offset, "\n");
                 if (col != 0) Nl();
 
                 /// Append \end.
@@ -237,39 +251,69 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
             case T::EndOfFile:
             case T::Invalid: Die("Invalid token");
             case T::Text:
+            case T::MacroArg:
                 output += ToUTF8(tokens[tok_index].string_content);
                 col += tokens[tok_index].string_content.size();
                 break;
             case T::CommandSequence:
-                if (tokens[tok_index].string_content == U"\\item" && col != 0) {
+            case T::Macro:
+                if (const auto& s = tokens[tok_index].string_content; s == U"\\item" && col != 0) {
                     Nl();
-                } else if (tokens[tok_index].string_content == U"\\begin") {
+                } else if (s == U"\\begin") {
                     FormatEnvBegin();
                     break;
-                } else if (tokens[tok_index].string_content == U"\\def") {
+                } else if (s == U"\\def") {
                     def_stack.push({line, output.size(), 0});
-                } else if (tokens[tok_index].string_content == U"\\end") {
+                } else if (s == U"\\end") {
                     FormatEnvEnd();
+                    break;
+                } else if (s.starts_with(U"\\if"))
+                    if_stack.push({line, output.size()});
+                else if (s == U"\\fi") {
+                    if (!if_stack.empty()) {
+                        auto [if_line, if_offset] = if_stack.top();
+                        if_stack.pop();
+                        if (if_offset && output[if_offset - 1] != '\n') output.insert(if_offset, "\n");
+                        if (col != 0) Nl();
+                        output += ToUTF8(s);
+                        col += 3;
+                        break;
+                    }
+                } else if (s == U"\\[") {
+                    if (col != 0) Nl();
+                } else if (s == U"\\]") {
+                    col += tokens[tok_index].string_content.size();
+                    output += ToUTF8(tokens[tok_index].string_content);
+                    (void) ProvideNl();
                     break;
                 }
 
                 col += tokens[tok_index].string_content.size();
                 output += ToUTF8(tokens[tok_index].string_content);
-                if (tokens[tok_index].string_content == U"\\\\" || tokens[tok_index].string_content == U"\\hline") {
-                    col = 0;
+
+                /// "\ " at the end of a line
+                if (tokens[tok_index].string_content.ends_with(U"\n")) {
+                    line++;
+                    col            = 0;
+                    last_ws_offset = 0;
+                }
+
+                if (tokens[tok_index].string_content == U"\\\\"
+                    || tokens[tok_index].string_content == U"\\hline"
+                    || tokens[tok_index].string_content == U"\\cline") {
                     Next();
                     if (AtEnd()) break;
-                    if (tokens[tok_index].type == T::CommandSequence
-                        && (tokens[tok_index].string_content == U"\\hline" || tokens[tok_index].string_content == U"\\cline"))
+                    /// Keep \hline and \cline on the same line as \\.
+                    while (tokens[tok_index].type == T::CommandSequence
+                           && (tokens[tok_index].string_content == U"\\hline" || tokens[tok_index].string_content == U"\\cline")) {
                         output += ToUTF8(tokens[tok_index].string_content);
-                    else discard = false;
+                        Next();
+                        if (AtEnd()) goto done;
+                    }
+                    discard = tokens[tok_index].type == T::Whitespace && TokenNewlines(tokens[tok_index]) == 1;
                     Nl();
                 }
-                break;
-            case T::Macro:
-            case T::MacroArg:
-                col += tokens[tok_index].string_content.size();
-                output += ToUTF8(tokens[tok_index].string_content);
+            done:
                 break;
             case T::LineComment:
                 col = 0;
@@ -342,7 +386,7 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
                         def_stack.pop();
                         if (d_line != line) {
                             /// Insert a line break before the \def and after the "{".
-                            if (d_offset) output.insert(d_offset, "\n");
+                            if (d_offset && output[d_offset - 1] != '\n') output.insert(d_offset, "\n");
                             if (col != 0) Nl();
                             output += '}';
                             Nl();
@@ -354,7 +398,11 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
                 col++;
                 if (env_end_arg_depth) {
                     env_end_arg_depth--;
-                    if (!env_end_arg_depth) Nl();
+                    if (!env_end_arg_depth) {
+                        Next();
+                        if (AtEnd()) break;
+                        (void) ProvideNl();
+                    }
                 }
                 break;
         }
@@ -417,22 +465,27 @@ auto Parser::FormatPass2(std::string&& text) -> std::vector<std::string> {
             pos++;
         }
 
-        /// Unindent due to more } than {.
-        if (lbra_cnt < rbra_cnt) {
-            I64 diff = (rbra_cnt - lbra_cnt) * 4;
-            if (indent_lvl < diff) indent_lvl = 0;
-            else indent_lvl -= diff;
-        }
-
         /// Handle indentation for \item.
         if (is_item) indent_by(item, indent_lvl < 6 ? 0 : indent_lvl - 6);
-        else indent(item);
+        /// Unindent this line if it starts with "}"
+        else if (item.starts_with("}")) {
+            I64 new_indent = indent_lvl - (rbra_cnt - lbra_cnt) * 4;
+            indent_by(item, new_indent < 0 ? 0 : new_indent);
+        }
+        /// Just indent it.
+        else
+            indent(item);
 
         /// Indent before the next line
         if (afterindent) indent_lvl += afterindent;
 
-        /// Indent due to more { than }.
-        if (lbra_cnt > rbra_cnt) indent_lvl += (lbra_cnt - rbra_cnt) * 4;
+        /// Unindent if more } than {,
+        /// or indent if to more { than }.
+        if (lbra_cnt < rbra_cnt) {
+            I64 diff = (rbra_cnt - lbra_cnt) * 4;
+            if (indent_lvl < diff) indent_lvl = 0;
+            else indent_lvl -= diff;
+        } else if (lbra_cnt > rbra_cnt) indent_lvl += (lbra_cnt - rbra_cnt) * 4;
     }
 
     /// Remove consecutive empty lines.

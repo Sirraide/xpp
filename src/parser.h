@@ -74,6 +74,8 @@ struct Parser : public AbstractLexer {
     void Emit();
     void Expect(TokenType type);
     void Format();
+    auto FormatPass1() -> std::string;
+    void FormatPass2(std::string&& text);
     void HandleDefine();
     void HandleMacroExpansion();
     void HandleReplace();

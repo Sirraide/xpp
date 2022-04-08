@@ -53,16 +53,26 @@ Parser::Parser(const options::parsed_options& _opts) : LexerBase(_opts.get<"-f">
     if (!has_error) Parser::Emit();
 }
 
-void Parser::Format() {
+/// Break the input into lines.
+auto Parser::FormatPass1() -> std::string {
     std::string output;
     U64         col{};
-    U64         indent_lvl{};
+    U64         line   = 1;
     bool        has_ws = false;
-    auto        indent = [&] {
-        for (U64 i = 0; i < indent_lvl * 4; i++) output += " ";
-        has_ws = true;
+
+    struct loc {
+        U64 line;
+        U64 offset;
     };
-    std::stack<U64> envs;
+
+    /// Keep track of the number of "{" and "}" after \end.
+    /// Break once it's 0.
+    U64 env_end_arg_depth = 0;
+
+    /// This holds the line and column numbers of \begin elements.
+    /// This is used to check whether the \begin and \end elements that belong
+    /// together are on a single line or not.
+    std::stack<loc> begin_stack{};
     while (token.type != TokenType::EndOfFile) {
         if (token.type != T::Whitespace) has_ws = false;
         switch (token.type) {
@@ -73,25 +83,59 @@ void Parser::Format() {
                 col++;
                 break;
             case T::CommandSequence:
-                if (token.string_content == U"\\begin") {
-                    indent_lvl++;
-                    envs.push(0);
-                    if (col != 0) {
-                        output += "\n";
-                        col = 0;
-                        indent();
-                    }
+                if (token.string_content == U"\\item" && col != 0) {
+                    col = 0;
+                    output += "\n";
+                    line++;
+                } else if (token.string_content == U"\\begin") {
+                    begin_stack.push({line, output.size()});
                 } else if (token.string_content == U"\\end") {
-                    indent_lvl--;
-                    envs.push(0);
-                    if (col != 0) {
-                        output += "\n";
-                        col = 0;
-                        indent();
+                    /// Check if we have a \begin on the stack.
+                    if (!begin_stack.empty()) {
+                        auto [b_line, b_offset] = begin_stack.top();
+                        begin_stack.pop();
+                        /// If the \begin and \end are not on the same line, insert a line break
+                        /// before the \begin and \end if they're not already on a new line.
+                        if (b_line != line) {
+                            if (b_offset) output.insert(b_offset, "\n");
+                            if (col != 0) {
+                                col = 0;
+                                output += "\n";
+                                line++;
+                            }
+
+                            /// Append \end.
+                            col += 4;
+                            output += "\\end";
+                            NextToken(); /// Yeet \end.
+
+                            /// Check the next token to see if it's "{".
+                            if (token.type == T::GroupBegin) {
+                                col++;
+                                output += '{';
+                                env_end_arg_depth++;
+                            } else PushLookahead(token);
+                            break; /// This will yeet the "{" at the end of the loop.
+                        }
                     }
+
+                    /// Otherwise, just append \end.
+                    col += token.string_content.size();
+                    output += ToUTF8(token.string_content);
+                    break;
                 }
+
                 col += token.string_content.size();
                 output += ToUTF8(token.string_content);
+                if (token.string_content == U"\\\\" || token.string_content == U"\\hline") {
+                    col = 0;
+                    NextToken();
+                    if (token.type == T::CommandSequence && (token.string_content == U"\\hline" || token.string_content == U"\\cline"))
+                        output += ToUTF8(token.string_content);
+                    else PushLookahead(token);
+                    output += "\n";
+                    line++;
+                }
                 break;
             case T::Macro:
             case T::MacroArg:
@@ -112,39 +156,117 @@ void Parser::Format() {
                 /// One is just whitespace.
                 if (newlines == 2) {
                     output += "\n\n";
-                    indent();
+                    line += 2;
                     col = 0;
                 } else if (col > 100) {
                     output += "\n";
+                    line++;
                     has_ws = true;
                     col    = 0;
                 } else {
-                    if (!has_ws) output += " ";
+                    if (!has_ws && col != 0) output += " ";
                     has_ws = true;
-                    col++;
+                    col += col != 0;
                     break;
                 }
             } break;
             case T::GroupBegin:
+                if (env_end_arg_depth) env_end_arg_depth++;
                 output += "{";
-                if (!envs.empty()) envs.top()++;
                 col++;
                 break;
             case T::GroupEnd:
                 output += "}";
-                if (!envs.empty()) envs.top()--;
-                if (envs.top() == 0) {
-                    envs.pop();
-                    output += "\n";
-                    indent();
-                }
                 col++;
+                if (env_end_arg_depth) {
+                    env_end_arg_depth--;
+                    if (!env_end_arg_depth) {
+                        output += '\n';
+                        col = 0;
+                        line++;
+                    }
+                }
                 break;
         }
         NextToken();
     }
-    output += "\n";
-    exit(fwrite(output.c_str(), output.size(), 1, output_file) != 1); /// 0 is true because exit code.
+    if (output[output.size() - 1] != '\n') output += "\n";
+    return output;
+}
+
+/// Trim and indent the lines.
+void Parser::FormatPass2(std::string&& text) {
+    std::vector<std::string> lines;
+    U64                      pos{};
+    for (;;) {
+        auto nl = text.find('\n', pos);
+        lines.push_back(text.substr(pos, nl - pos));
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+    }
+    for (auto& item : lines) item = Trim(item);
+
+    I64  indent_lvl{};
+    auto indent_by = [&](std::string& s, I64 how_much) {
+        std::string t;
+        for (I64 i = 0; i < how_much; i++) t += ' ';
+        if (!t.empty()) s = t + s;
+    };
+    auto indent = [&](std::string& s) { indent_by(s, indent_lvl); };
+    for (auto& item : lines) {
+        /// \item is a special case.
+        bool is_item = false;
+
+        /// We might want to start indenting on the next line instead of this one.
+        I64 afterindent{};
+
+        /// \begin and \end change the indentation by 4; as do \if* and \fi.
+        /// Environments that contain \item's change the indentation by 6.
+        if (item.starts_with("\\begin") || item.starts_with("\\if")) {
+            if (item.starts_with("\\begin{enumerate}") || item.starts_with("\\begin{itemize}")) afterindent = 10;
+            else afterindent = 4;
+        } else if (item.starts_with("\\end") || (item.size() == 3 && item == "\\fi") || (item.starts_with("\\fi "))) {
+            if (item.starts_with("\\end{enumerate}") || item.starts_with("\\end{itemize}")) indent_lvl -= 6;
+            if (indent_lvl < 4) indent_lvl = 0;
+            else indent_lvl -= 4;
+        } else if (item.starts_with("\\item")) is_item = true;
+
+        /// A different number of { and } on a line changes the indentation.
+        I64 lbra_cnt{}, rbra_cnt{};
+        pos = 0;
+        while (pos = item.find('{', pos), pos != std::string::npos) {
+            lbra_cnt++;
+            pos++;
+        }
+        pos = 0;
+        while (pos = item.find('}', pos), pos != std::string::npos) {
+            rbra_cnt++;
+            pos++;
+        }
+
+        /// Unindent due to more } than {.
+        if (lbra_cnt < rbra_cnt) {
+            I64 diff = (rbra_cnt - lbra_cnt) * 4;
+            if (indent_lvl < diff) indent_lvl = 0;
+            else indent_lvl -= diff;
+        }
+
+        // Handle indentation for \item.
+        if (is_item) indent_by(item, indent_lvl < 6 ? 0 : indent_lvl - 6);
+        else indent(item);
+
+        /// Indent before the next line
+        if (afterindent) indent_lvl += afterindent;
+
+        /// Indent due to more { than }.
+        if (lbra_cnt > rbra_cnt) indent_lvl += (lbra_cnt - rbra_cnt) * 4;
+    }
+
+    for (auto& item : lines) std::cout << item << "\n";
+}
+
+void Parser::Format() {
+    FormatPass2(FormatPass1());
 }
 
 void Parser::LexLineComment() {

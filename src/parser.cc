@@ -53,105 +53,211 @@ Parser::Parser(const options::parsed_options& _opts) : LexerBase(_opts.get<"-f">
     if (!has_error) Parser::Emit();
 }
 
-/// Break the input into lines.
-auto Parser::FormatPass1() -> std::string {
-    std::string output;
-    U64         col{};
-    U64         line   = 1;
-    bool        has_ws = false;
-
+/// Format Pass 1: Break the input into lines.
+auto Parser::FormatPass1(NodeList&& tokens) -> std::string {
     struct loc {
         U64 line;
         U64 offset;
     };
 
+    struct def {
+        U64 line;
+        U64 offset;
+        U64 open_braces;
+    };
+
+    /// Buffer where we're going to store the result of pass 1.
+    std::string output;
+
+    /// This is used to make sure that we don't insert any more
+    /// whitespace if we've already inserted whitespace.
+    bool has_ws = false;
+
+    /// This is NOT an exact line count, but it can
+    /// serve to determine whether two tokens are on
+    /// the same line or not.
+    U64 line = 1;
+
+    /// This serves to keep lines < 100 chars.
+    U64 col{};
+
     /// Keep track of the number of "{" and "}" after \end.
     /// Break once it's 0.
-    U64 env_end_arg_depth = 0;
+    U64 env_end_arg_depth{};
+
+    /// This holds the line and column numbers of \def elements.
+    /// This is used to check whether the \def and "}" elements that belong
+    /// together are on a single line or not.
+    std::stack<def> def_stack{};
 
     /// This holds the line and column numbers of \begin elements.
     /// This is used to check whether the \begin and \end elements that belong
     /// together are on a single line or not.
     std::stack<loc> begin_stack{};
-    while (token.type != TokenType::EndOfFile) {
-        if (token.type != T::Whitespace) has_ws = false;
-        switch (token.type) {
-            case T::EndOfFile:
-            case T::Invalid: Die("Invalid token");
-            case T::Text:
-                output += ToUTF8(token.string_content);
-                col++;
+
+    /// Loop variable.
+    /// This is declared here so that we can capture it
+    /// in the lambdas below.
+    U64 tok_index{};
+
+    /// Set this to false if the current token should not be discarded
+    /// at the end of the loop. This resets every iteration.
+    bool discard = true;
+
+    /// Advance to the next token.
+    auto Next = [&] { tok_index++; };
+
+    /// Check if we're at the end of the input.
+    auto AtEnd = [&] { return tok_index == tokens.size(); };
+
+    /// Count the number of line breaks in the current token.
+    /// Since in LaTeX, more than two line breaks is the same as two line breaks,
+    /// we stop searching after finding two.
+    auto TokenNewlines = [](const Token& tok) {
+        U64 newlines{};
+        for (auto c : tok.string_content)
+            if (c == '\n' && ++newlines == 2)
                 break;
-            case T::CommandSequence:
-                if (token.string_content == U"\\item" && col != 0) {
+        return newlines;
+    };
+
+    auto FormatEnvBegin = [&] {
+        /// Push this onto the stack and append the \begin.
+        begin_stack.push({line, output.size()});
+        output += "\\begin";
+        col += 6;
+        Next(); /// Yeet \begin.
+        if (AtEnd()) return;
+
+        /// \begin{document} must be on a separate line.
+        /// "{" "document" "}"
+        if (tokens[tok_index].type != TokenType::GroupBegin) {
+            discard = false;
+            return;
+        }
+        output += '{';
+        col++;
+        Next(); /// Yeet "{".
+        if (AtEnd()) return;
+
+        /// "document" "}"
+        if (tokens[tok_index].type != TokenType::Text || tokens[tok_index].string_content != U"document") {
+            discard = false;
+            return;
+        }
+        output += "document";
+        col += 8;
+
+        Next(); /// Yeet "document".
+        if (AtEnd()) return;
+
+        /// "}"
+        if (tokens[tok_index].type != TokenType::GroupEnd) {
+            discard = false;
+            return;
+        }
+        output += "}\n";
+        col = 0;
+        line++;
+
+        Next(); /// Yeet "}"
+        if (AtEnd()) return;
+
+        /// Yeet the next whitespace token.
+        discard = tokens[tok_index].type == TokenType::Whitespace;
+    };
+
+    auto FormatEnvEnd = [&] {
+        /// Check if we have a \begin on the stack.
+        if (!begin_stack.empty()) {
+            auto [b_line, b_offset] = begin_stack.top();
+            begin_stack.pop();
+            /// If the \begin and \end are not on the same line, insert a line break
+            /// before the \begin and \end if they're not already on a new line.
+            if (b_line != line) {
+                if (b_offset) output.insert(b_offset, "\n");
+                if (col != 0) {
                     col = 0;
                     output += "\n";
                     line++;
-                } else if (token.string_content == U"\\begin") {
-                    begin_stack.push({line, output.size()});
-                } else if (token.string_content == U"\\end") {
-                    /// Check if we have a \begin on the stack.
-                    if (!begin_stack.empty()) {
-                        auto [b_line, b_offset] = begin_stack.top();
-                        begin_stack.pop();
-                        /// If the \begin and \end are not on the same line, insert a line break
-                        /// before the \begin and \end if they're not already on a new line.
-                        if (b_line != line) {
-                            if (b_offset) output.insert(b_offset, "\n");
-                            if (col != 0) {
-                                col = 0;
-                                output += "\n";
-                                line++;
-                            }
+                }
 
-                            /// Append \end.
-                            col += 4;
-                            output += "\\end";
-                            NextToken(); /// Yeet \end.
+                /// Append \end.
+                col += 4;
+                output += "\\end";
+                Next(); /// Yeet \end.
+                if (AtEnd()) return;
 
-                            /// Check the next token to see if it's "{".
-                            if (token.type == T::GroupBegin) {
-                                col++;
-                                output += '{';
-                                env_end_arg_depth++;
-                            } else PushLookahead(token);
-                            break; /// This will yeet the "{" at the end of the loop.
-                        }
-                    }
+                /// Check the next token to see if it's "{".
+                if (tokens[tok_index].type == T::GroupBegin) {
+                    col++;
+                    output += '{';
+                    env_end_arg_depth++;
+                    Next(); /// Yeet "{".
+                }
+                discard = false;
+                return;
+            }
+        }
 
-                    /// Otherwise, just append \end.
-                    col += token.string_content.size();
-                    output += ToUTF8(token.string_content);
+        /// Otherwise, just append \end.
+        col += tokens[tok_index].string_content.size();
+        output += ToUTF8(tokens[tok_index].string_content);
+    };
+
+    while (tok_index < tokens.size()) {
+        discard = true;
+        if (tokens[tok_index].type != T::Whitespace) has_ws = false;
+        switch (tokens[tok_index].type) {
+            case T::EndOfFile:
+            case T::Invalid: Die("Invalid token");
+            case T::Text:
+                output += ToUTF8(tokens[tok_index].string_content);
+                col++;
+                break;
+            case T::CommandSequence:
+                if (tokens[tok_index].string_content == U"\\item" && col != 0) {
+                    col = 0;
+                    output += "\n";
+                    line++;
+                } else if (tokens[tok_index].string_content == U"\\begin") {
+                    FormatEnvBegin();
+                    break;
+                } else if (tokens[tok_index].string_content == U"\\def") {
+                    def_stack.push({line, output.size(), 0});
+                } else if (tokens[tok_index].string_content == U"\\end") {
+                    FormatEnvEnd();
                     break;
                 }
 
-                col += token.string_content.size();
-                output += ToUTF8(token.string_content);
-                if (token.string_content == U"\\\\" || token.string_content == U"\\hline") {
+                col += tokens[tok_index].string_content.size();
+                output += ToUTF8(tokens[tok_index].string_content);
+                if (tokens[tok_index].string_content == U"\\\\" || tokens[tok_index].string_content == U"\\hline") {
                     col = 0;
-                    NextToken();
-                    if (token.type == T::CommandSequence && (token.string_content == U"\\hline" || token.string_content == U"\\cline"))
-                        output += ToUTF8(token.string_content);
-                    else PushLookahead(token);
+                    Next();
+                    if (AtEnd()) break;
+                    if (tokens[tok_index].type == T::CommandSequence
+                        && (tokens[tok_index].string_content == U"\\hline" || tokens[tok_index].string_content == U"\\cline"))
+                        output += ToUTF8(tokens[tok_index].string_content);
+                    else discard = false;
                     output += "\n";
                     line++;
                 }
                 break;
             case T::Macro:
             case T::MacroArg:
-                col += token.string_content.size();
-                output += ToUTF8(token.string_content);
+                col += tokens[tok_index].string_content.size();
+                output += ToUTF8(tokens[tok_index].string_content);
                 break;
             case T::LineComment:
                 col = 0;
-                output += ToUTF8(token.string_content);
+                line++;
+                output += ToUTF8(tokens[tok_index].string_content);
                 break;
             case T::Whitespace: {
                 /// Count the number of newlines.
-                U64 newlines{};
-                for (auto c : token.string_content)
-                    if (c == '\n' && ++newlines == 2)
-                        break;
+                U64 newlines = TokenNewlines(tokens[tok_index]);
+
                 /// Two or more newlines are a paragraph break.
                 /// One is just whitespace.
                 if (newlines == 2) {
@@ -172,10 +278,56 @@ auto Parser::FormatPass1() -> std::string {
             } break;
             case T::GroupBegin:
                 if (env_end_arg_depth) env_end_arg_depth++;
+                if (!def_stack.empty()) {
+                    def_stack.top().open_braces++;
+                    /// Insert a line break after the "{" of a \def if the
+                    /// user provided one.
+                    if (def_stack.top().open_braces == 1) {
+                        output += "{";
+                        Next(); /// Yeet "{"
+                        if (AtEnd()) break;
+
+                        if (tokens[tok_index].type == T::Whitespace) {
+                            U64 newlines = TokenNewlines(tokens[tok_index]);
+                            if (newlines >= 1) {
+                                if (newlines > 1) output += "\n\n";
+                                else output += '\n';
+                                line++;
+                                col = 0;
+                                break; /// Yeet whitespace.
+                            }
+                        }
+
+                        discard = false;
+                        break;
+                    }
+                }
                 output += "{";
                 col++;
                 break;
             case T::GroupEnd:
+                /// If this "}" closes a \def, insert a line before the def
+                /// as well as before and after this if the \def is not on the
+                /// same line as this.
+                if (!def_stack.empty()) {
+                    def_stack.top().open_braces--;
+                    if (!def_stack.top().open_braces) {
+                        auto [d_line, d_offset, _] = def_stack.top();
+                        def_stack.pop();
+                        if (d_line != line) {
+                            /// Insert a line break before the \def and after the "{".
+                            if (d_offset) output.insert(d_offset, "\n");
+                            if (col != 0) {
+                                output += '\n';
+                                line++;
+                            }
+                            output += "}\n";
+                            line++;
+                            col = 0;
+                            break;
+                        }
+                    }
+                }
                 output += "}";
                 col++;
                 if (env_end_arg_depth) {
@@ -188,14 +340,15 @@ auto Parser::FormatPass1() -> std::string {
                 }
                 break;
         }
-        NextToken();
+        if (discard) tok_index++;
     }
     if (output[output.size() - 1] != '\n') output += "\n";
     return output;
 }
 
-/// Trim and indent the lines.
-void Parser::FormatPass2(std::string&& text) {
+/// Format Pass 2: Trim whitespace and indent the lines.
+auto Parser::FormatPass2(std::string&& text) -> std::vector<std::string> {
+    /// Split the input into lines.
     std::vector<std::string> lines;
     U64                      pos{};
     for (;;) {
@@ -213,6 +366,7 @@ void Parser::FormatPass2(std::string&& text) {
         if (!t.empty()) s = t + s;
     };
     auto indent = [&](std::string& s) { indent_by(s, indent_lvl); };
+
     for (auto& item : lines) {
         /// \item is a special case.
         bool is_item = false;
@@ -224,8 +378,8 @@ void Parser::FormatPass2(std::string&& text) {
         /// Environments that contain \item's change the indentation by 6.
         if (item.starts_with("\\begin") || item.starts_with("\\if")) {
             if (item.starts_with("\\begin{enumerate}") || item.starts_with("\\begin{itemize}")) afterindent = 10;
-            else afterindent = 4;
-        } else if (item.starts_with("\\end") || (item.size() == 3 && item == "\\fi") || (item.starts_with("\\fi "))) {
+            else if (!item.starts_with("\\begin{document}")) afterindent = 4;
+        } else if (item.starts_with("\\end") || (item.starts_with("\\fi") && (item.size() == 3 || !std::isalpha(item[3])))) {
             if (item.starts_with("\\end{enumerate}") || item.starts_with("\\end{itemize}")) indent_lvl -= 6;
             if (indent_lvl < 4) indent_lvl = 0;
             else indent_lvl -= 4;
@@ -251,7 +405,7 @@ void Parser::FormatPass2(std::string&& text) {
             else indent_lvl -= diff;
         }
 
-        // Handle indentation for \item.
+        /// Handle indentation for \item.
         if (is_item) indent_by(item, indent_lvl < 6 ? 0 : indent_lvl - 6);
         else indent(item);
 
@@ -262,11 +416,30 @@ void Parser::FormatPass2(std::string&& text) {
         if (lbra_cnt > rbra_cnt) indent_lvl += (lbra_cnt - rbra_cnt) * 4;
     }
 
-    for (auto& item : lines) std::cout << item << "\n";
+    /// Remove consecutive empty lines.
+    std::vector<I64> empty_lines;
+    bool prev_was_empty = false;
+    for (U64 i = 0; i < lines.size(); i++) {
+        if (lines[i].empty()) {
+            if (prev_was_empty) empty_lines.push_back(I64(i));
+            else prev_was_empty = true;
+        } else prev_was_empty = false;
+    }
+    for (auto it = empty_lines.rbegin(); it != empty_lines.rend(); ++it)
+        lines.erase(lines.begin() + *it);
+
+    return lines;
 }
 
 void Parser::Format() {
-    FormatPass2(FormatPass1());
+    /// Split the text into tokens and merge text nodes.
+    while (token.type != T::EndOfFile) {
+        tokens.push_back(token);
+        NextToken();
+    }
+    MergeTextNodes(tokens, false);
+    for (auto& item : FormatPass2(FormatPass1(std::move(tokens))))
+        fprintf(output_file, "%s\n", item.c_str());
 }
 
 void Parser::LexLineComment() {
@@ -670,18 +843,18 @@ std::string Parser::TokenTypeToString(TokenType type) {
     Unreachable("TokenTypeToString");
 }
 
-void Parser::MergeTextNodes(NodeList& lst) {
+void Parser::MergeTextNodes(NodeList& lst, bool merge_whitespace) {
     using enum TokenType;
     for (U64 i = 0; i < lst.size(); i++) {
-        if (lst[i].type == Text || lst[i].type == Whitespace) {
+        if (lst[i].type == Text || (merge_whitespace && lst[i].type == Whitespace)) {
             U64 start = i++;
             if (i == lst.size()) break;
-            if (lst[i].type == Text || lst[i].type == Whitespace) {
+            if (lst[i].type == Text || (merge_whitespace && lst[i].type == Whitespace)) {
                 Token node;
                 node.type           = Text;
                 node.string_content = lst[i - 1].string_content;
                 do node.string_content += lst[i++].string_content;
-                while (i < lst.size() && (lst[i].type == Text || lst[i].type == Whitespace));
+                while (i < lst.size() && (lst[i].type == Text || (merge_whitespace && lst[i].type == Whitespace)));
                 lst.erase(lst.begin() + I64(start), lst.begin() + I64(i));
                 lst.insert(lst.begin() + I64(start), node);
                 i = start;

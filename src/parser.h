@@ -74,8 +74,6 @@ struct Parser : public AbstractLexer {
     void Emit();
     void Expect(TokenType type);
     void Format();
-    auto FormatPass1() -> std::string;
-    void FormatPass2(std::string&& text);
     void HandleDefine();
     void HandleMacroExpansion();
     void HandleReplace();
@@ -96,7 +94,9 @@ struct Parser : public AbstractLexer {
     auto ReplaceReadUntilBrace() -> String;
     void SkipCharsUntilIfWhitespace(Char c);
 
-    static void MergeTextNodes(NodeList& lst);
+    static auto FormatPass1(NodeList&& tokens) -> std::string;
+    static auto FormatPass2(std::string&& text) -> std::vector<std::string>;
+    static void MergeTextNodes(NodeList& lst, bool merge_whitespace = true);
     static auto TokenTypeToString(TokenType type) -> std::string;
 };
 

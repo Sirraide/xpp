@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <fmt/format.h>
+#include <list>
 #include <variant>
 namespace TeX {
 bool IsSpace(U32 c) {
@@ -24,6 +25,11 @@ Parser::Parser(const options::parsed_options& _opts) : LexerBase(_opts.get<"-f">
     if (opts.has<"-o">()) output_file = fopen(opts.get<"-o">().c_str(), "w");
     else output_file = stdout;
     if (!output_file) Die("Could not open output file: %s", strerror(errno));
+
+    if (opts.has<"--line-width">()) {
+        I64 lw     = opts.get<"--line-width">();
+        line_width = lw < 20 ? 100 : U64(lw);
+    }
 
     Parser::NextChar();
     Parser::NextToken();
@@ -54,7 +60,7 @@ Parser::Parser(const options::parsed_options& _opts) : LexerBase(_opts.get<"-f">
 }
 
 /// Format Pass 1: Break the input into lines.
-auto Parser::FormatPass1(NodeList&& tokens) -> std::string {
+auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
     struct loc {
         U64 line;
         U64 offset;
@@ -78,12 +84,16 @@ auto Parser::FormatPass1(NodeList&& tokens) -> std::string {
     /// the same line or not.
     U64 line = 1;
 
-    /// This serves to keep lines < 100 chars.
+    /// This serves to keep lines < line_width chars.
     U64 col{};
 
     /// Keep track of the number of "{" and "}" after \end.
     /// Break once it's 0.
     U64 env_end_arg_depth{};
+
+    /// Offset to the last space we inserted.
+    /// Used to insert a line break if an element is too long.
+    I64 last_ws_offset{};
 
     /// This holds the line and column numbers of \def elements.
     /// This is used to check whether the \def and "}" elements that belong
@@ -104,11 +114,31 @@ auto Parser::FormatPass1(NodeList&& tokens) -> std::string {
     /// at the end of the loop. This resets every iteration.
     bool discard = true;
 
+    /// Whether the last token was a command sequence or "}".
+    /// This is used to check if we should preserve line breaks.
+    bool last_was_seq_or_gr_end = false;
+
     /// Advance to the next token.
     auto Next = [&] { tok_index++; };
 
     /// Check if we're at the end of the input.
     auto AtEnd = [&] { return tok_index == tokens.size(); };
+
+    /// Append a line break to the output
+    auto Nl = [&] {
+        col = 0;
+        output += "\n";
+        last_ws_offset = 0;
+        line++;
+    };
+
+    /// Append a space to the output.
+    auto Space = [&] {
+        last_ws_offset = I64(output.size());
+        output += " ";
+        has_ws = true;
+        col++;
+    };
 
     /// Count the number of line breaks in the current token.
     /// Since in LaTeX, more than two line breaks is the same as two line breaks,
@@ -156,9 +186,8 @@ auto Parser::FormatPass1(NodeList&& tokens) -> std::string {
             discard = false;
             return;
         }
-        output += "}\n";
-        col = 0;
-        line++;
+        output += '}';
+        Nl();
 
         Next(); /// Yeet "}"
         if (AtEnd()) return;
@@ -176,11 +205,7 @@ auto Parser::FormatPass1(NodeList&& tokens) -> std::string {
             /// before the \begin and \end if they're not already on a new line.
             if (b_line != line) {
                 if (b_offset) output.insert(b_offset, "\n");
-                if (col != 0) {
-                    col = 0;
-                    output += "\n";
-                    line++;
-                }
+                if (col != 0) Nl();
 
                 /// Append \end.
                 col += 4;
@@ -213,13 +238,11 @@ auto Parser::FormatPass1(NodeList&& tokens) -> std::string {
             case T::Invalid: Die("Invalid token");
             case T::Text:
                 output += ToUTF8(tokens[tok_index].string_content);
-                col++;
+                col += tokens[tok_index].string_content.size();
                 break;
             case T::CommandSequence:
                 if (tokens[tok_index].string_content == U"\\item" && col != 0) {
-                    col = 0;
-                    output += "\n";
-                    line++;
+                    Nl();
                 } else if (tokens[tok_index].string_content == U"\\begin") {
                     FormatEnvBegin();
                     break;
@@ -240,8 +263,7 @@ auto Parser::FormatPass1(NodeList&& tokens) -> std::string {
                         && (tokens[tok_index].string_content == U"\\hline" || tokens[tok_index].string_content == U"\\cline"))
                         output += ToUTF8(tokens[tok_index].string_content);
                     else discard = false;
-                    output += "\n";
-                    line++;
+                    Nl();
                 }
                 break;
             case T::Macro:
@@ -261,18 +283,24 @@ auto Parser::FormatPass1(NodeList&& tokens) -> std::string {
                 /// Two or more newlines are a paragraph break.
                 /// One is just whitespace.
                 if (newlines == 2) {
-                    output += "\n\n";
-                    line += 2;
-                    col = 0;
-                } else if (col > 100) {
-                    output += "\n";
-                    line++;
-                    has_ws = true;
-                    col    = 0;
+                    if (col > line_width && last_ws_offset > 0) output.replace(U64(last_ws_offset), 1, "\n");
+                    output += '\n';
+                    Nl();
+                } else if (col > line_width) {
+                    /// Reflow the line if we can.
+                    if (last_ws_offset > 0) {
+                        output.replace(U64(last_ws_offset), 1, "\n");
+                        col = output.size() - U64(last_ws_offset) - 1;
+                    }
+                    /// The line might still be too long.
+                    if (col > line_width) Nl();
+                    else Space();
                 } else {
-                    if (!has_ws && col != 0) output += " ";
-                    has_ws = true;
-                    col += col != 0;
+                    /// If the last token was a command sequence or "}", and
+                    /// this is a manual line break, keep the line break.
+                    /// Otherwise, convert it to a single space.
+                    if (last_was_seq_or_gr_end && newlines) Nl();
+                    else if (!has_ws && col != 0) Space();
                     break;
                 }
             } break;
@@ -290,10 +318,8 @@ auto Parser::FormatPass1(NodeList&& tokens) -> std::string {
                         if (tokens[tok_index].type == T::Whitespace) {
                             U64 newlines = TokenNewlines(tokens[tok_index]);
                             if (newlines >= 1) {
-                                if (newlines > 1) output += "\n\n";
-                                else output += '\n';
-                                line++;
-                                col = 0;
+                                if (newlines > 1) output += '\n';
+                                Nl();
                                 break; /// Yeet whitespace.
                             }
                         }
@@ -317,13 +343,9 @@ auto Parser::FormatPass1(NodeList&& tokens) -> std::string {
                         if (d_line != line) {
                             /// Insert a line break before the \def and after the "{".
                             if (d_offset) output.insert(d_offset, "\n");
-                            if (col != 0) {
-                                output += '\n';
-                                line++;
-                            }
-                            output += "}\n";
-                            line++;
-                            col = 0;
+                            if (col != 0) Nl();
+                            output += '}';
+                            Nl();
                             break;
                         }
                     }
@@ -332,14 +354,11 @@ auto Parser::FormatPass1(NodeList&& tokens) -> std::string {
                 col++;
                 if (env_end_arg_depth) {
                     env_end_arg_depth--;
-                    if (!env_end_arg_depth) {
-                        output += '\n';
-                        col = 0;
-                        line++;
-                    }
+                    if (!env_end_arg_depth) Nl();
                 }
                 break;
         }
+        last_was_seq_or_gr_end = tokens[tok_index].type == T::CommandSequence || tokens[tok_index].type == T::GroupEnd;
         if (discard) tok_index++;
     }
     if (output[output.size() - 1] != '\n') output += "\n";
@@ -418,7 +437,7 @@ auto Parser::FormatPass2(std::string&& text) -> std::vector<std::string> {
 
     /// Remove consecutive empty lines.
     std::vector<I64> empty_lines;
-    bool prev_was_empty = false;
+    bool             prev_was_empty = false;
     for (U64 i = 0; i < lines.size(); i++) {
         if (lines[i].empty()) {
             if (prev_was_empty) empty_lines.push_back(I64(i));
@@ -438,7 +457,7 @@ void Parser::Format() {
         NextToken();
     }
     MergeTextNodes(tokens, false);
-    for (auto& item : FormatPass2(FormatPass1(std::move(tokens))))
+    for (auto& item : FormatPass2(FormatPass1(std::move(tokens), line_width)))
         fprintf(output_file, "%s\n", item.c_str());
 }
 
@@ -843,24 +862,27 @@ std::string Parser::TokenTypeToString(TokenType type) {
     Unreachable("TokenTypeToString");
 }
 
-void Parser::MergeTextNodes(NodeList& lst, bool merge_whitespace) {
+void Parser::MergeTextNodes(NodeList& _lst, bool merge_whitespace) {
     using enum TokenType;
-    for (U64 i = 0; i < lst.size(); i++) {
-        if (lst[i].type == Text || (merge_whitespace && lst[i].type == Whitespace)) {
-            U64 start = i++;
-            if (i == lst.size()) break;
-            if (lst[i].type == Text || (merge_whitespace && lst[i].type == Whitespace)) {
+    std::list<Node> nodes;
+    for (auto&& item : _lst) nodes.push_back(std::move(item));
+    for (auto it = nodes.begin(); it != nodes.end(); ++it) {
+        if (it->type == Text || (merge_whitespace && it->type == Whitespace)) {
+            auto start = it++;
+            if (it == nodes.end()) break;
+            if (it->type == Text || (merge_whitespace && it->type == Whitespace)) {
                 Token node;
                 node.type           = Text;
-                node.string_content = lst[i - 1].string_content;
-                do node.string_content += lst[i++].string_content;
-                while (i < lst.size() && (lst[i].type == Text || (merge_whitespace && lst[i].type == Whitespace)));
-                lst.erase(lst.begin() + I64(start), lst.begin() + I64(i));
-                lst.insert(lst.begin() + I64(start), node);
-                i = start;
+                node.string_content = start->string_content;
+                do node.string_content += it->string_content;
+                while (++it != nodes.end() && (it->type == Text || (merge_whitespace && it->type == Whitespace)));
+                nodes.erase(start, it);
+                nodes.insert(it, node);
             }
         }
     }
+    _lst.clear();
+    for (auto&& item : nodes) _lst.push_back(std::move(item));
 }
 
 void Parser::LexMacroArg() {

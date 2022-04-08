@@ -51,6 +51,7 @@ struct Parser : public AbstractLexer {
     using options = cl::clopts<
         cl::option<"-o", "The file to output to">,
         cl::option<"-f", "The file to process", std::string, true>,
+        cl::option<"--line-width", "The maxiumum line width", I64>,
         cl::flag<"--print-tokens", "Print all tokens to stdout and exit">,
         cl::flag<"--wc", "Count the number of characters and words in the file">,
         cl::flag<"--format", "Format a file instead of preprocessing it">,
@@ -64,6 +65,7 @@ struct Parser : public AbstractLexer {
     ReplacementRules        raw_rep_rules;
     NodeList                tokens;
     U64                     group_count = 0;
+    U64                     line_width = 100;
     std::queue<Node>        lookahead_queue;
     String                  processed_text;
 
@@ -94,7 +96,7 @@ struct Parser : public AbstractLexer {
     auto ReplaceReadUntilBrace() -> String;
     void SkipCharsUntilIfWhitespace(Char c);
 
-    static auto FormatPass1(NodeList&& tokens) -> std::string;
+    static auto FormatPass1(NodeList&& tokens, U64 line_width) -> std::string;
     static auto FormatPass2(std::string&& text) -> std::vector<std::string>;
     static void MergeTextNodes(NodeList& lst, bool merge_whitespace = true);
     static auto TokenTypeToString(TokenType type) -> std::string;

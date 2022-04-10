@@ -299,7 +299,10 @@ void Parser::ParseCommandSequence() {
         auto group = ParseGroup(true);
         IncludeFile(ToUTF8(Trim(AsTextNode(group))));
         NextToken();
-    } else if (macros.contains(token.string_content)) {
+    } //else if (token.string_content == U"\\Eval") {
+        // HandleEval();
+    //}
+    else if (macros.contains(token.string_content)) {
         HandleMacroExpansion();
     }
 }

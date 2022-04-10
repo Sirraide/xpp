@@ -77,6 +77,8 @@ struct Parser : public AbstractLexer {
     void Expect(TokenType type);
     void Format();
     void HandleDefine();
+    void HandleDefun();
+    void HandleEval();
     void HandleMacroExpansion();
     void HandleReplace();
     void LexCommandSequence();

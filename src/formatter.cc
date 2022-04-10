@@ -63,6 +63,9 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
     /// This is used to check if we should preserve line breaks.
     bool last_was_seq_or_gr_end = false;
 
+    /// Whether to insert a line break if the next token is not text.
+    bool break_if_not_text = false;
+
     /// Advance to the next token.
     auto Next = [&] { tok_index++; };
 
@@ -102,6 +105,16 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
     auto ProvideNl = [&] [[nodiscard]] {
         Next();
         if (AtEnd()) return false;
+
+        /// If the next token is a comment, print it before trying to insert a newline.
+        /// This allows the user to put comments after a closing "}".
+        if (tokens[tok_index].type == T::LineComment) {
+            auto comment_str = ToUTF8(tokens[tok_index].string_content);
+            output.append(comment_str.c_str(), comment_str.size() < 2 ? comment_str.size() : comment_str.size() - 1);
+            Next();
+            if (AtEnd()) return false;
+        }
+
         discard = tokens[tok_index].type == T::Whitespace && TokenNewlines(tokens[tok_index]) == 1;
         Nl();
         return true;
@@ -149,7 +162,7 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
         if (AtEnd()) return;
 
         /// Yeet the next whitespace token.
-        discard = tokens[tok_index].type == TokenType::Whitespace;
+        discard = tokens[tok_index].type == TokenType::Whitespace && TokenNewlines(tokens[tok_index]) == 1;
     };
 
     auto FormatEnvEnd = [&] {
@@ -189,6 +202,10 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
     while (tok_index < tokens.size()) {
         discard = true;
         if (tokens[tok_index].type != T::Whitespace) has_ws = false;
+        if (break_if_not_text) {
+            if (tokens[tok_index].type != T::Text) Nl();
+            break_if_not_text = false;
+        }
         switch (tokens[tok_index].type) {
             case T::EndOfFile:
             case T::Invalid: Die("Invalid token");
@@ -280,13 +297,23 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
                     }
                     /// The line might still be too long.
                     if (col > line_width) Nl();
-                    else Space();
+                    else {
+                        /// If the user inserted a line break here and the next token is not text,
+                        /// keep the line break. Otherwise, replace it with a space to reflow the text.
+                        if (newlines == 1) break_if_not_text = true;
+                        Space();
+                    }
                 } else {
                     /// If the last token was a command sequence or "}", and
                     /// this is a manual line break, keep the line break.
                     /// Otherwise, convert it to a single space.
                     if (last_was_seq_or_gr_end && newlines) Nl();
-                    else if (!has_ws && col != 0) Space();
+                    else if (!has_ws && col != 0) {
+                        /// If the user inserted a line break here and the next token is not text,
+                        /// keep the line break. Otherwise, replace it with a space to reflow the text.
+                        if (newlines == 1) break_if_not_text = true;
+                        Space();
+                    }
                     break;
                 }
             } break;
@@ -331,7 +358,7 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
                             if (d_offset && output[d_offset - 1] != '\n') output.insert(d_offset, "\n");
                             if (col != 0) Nl();
                             output += '}';
-                            Nl();
+                            (void) ProvideNl();
                             break;
                         }
                     }
@@ -340,11 +367,7 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
                 col++;
                 if (env_end_arg_depth) {
                     env_end_arg_depth--;
-                    if (!env_end_arg_depth) {
-                        Next();
-                        if (AtEnd()) break;
-                        (void) ProvideNl();
-                    }
+                    if (!env_end_arg_depth) (void) ProvideNl();
                 }
                 break;
         }

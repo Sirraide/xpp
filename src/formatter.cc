@@ -379,7 +379,15 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
 }
 
 /// Format Pass 2: Trim whitespace and indent the lines.
-auto Parser::FormatPass2(std::string&& text) -> std::vector<std::string> {
+auto Parser::FormatPass2(std::string&& text, std::vector<std::string> enumerate_envs) -> std::vector<std::string> {
+    std::vector<std::string> enumerate_envs_begin;
+    std::vector<std::string> enumerate_envs_end;
+
+    for (auto& env : enumerate_envs) {
+        enumerate_envs_begin.push_back("\\begin{" + env + "}");
+        enumerate_envs_end.push_back("\\end{" + env + "}");
+    }
+
     /// Split the input into lines.
     std::vector<std::string> lines;
     U64                      pos{};
@@ -409,10 +417,23 @@ auto Parser::FormatPass2(std::string&& text) -> std::vector<std::string> {
         /// \begin and \end change the indentation by 4; as do \if* and \fi.
         /// Environments that contain \item's change the indentation by 6.
         if (item.starts_with("\\begin") || item.starts_with("\\if")) {
-            if (item.starts_with("\\begin{enumerate}") || item.starts_with("\\begin{itemize}")) afterindent = 10;
-            else if (!item.starts_with("\\begin{document}")) afterindent = 4;
+            bool enumerate = false;
+            for (const auto& env : enumerate_envs_begin) {
+                if (item.starts_with(env)) {
+                    enumerate = true;
+                    afterindent = 10;
+                    break;
+                }
+            }
+
+            if (!enumerate && !item.starts_with("\\begin{document}")) afterindent = 4;
         } else if (item.starts_with("\\end") || (item.starts_with("\\fi") && (item.size() == 3 || !std::isalpha(item[3])))) {
-            if (item.starts_with("\\end{enumerate}") || item.starts_with("\\end{itemize}")) indent_lvl -= 6;
+            for (const auto& env : enumerate_envs_end) {
+                if (item.starts_with(env)) {
+                    indent_lvl -= 6;
+                    break;
+                }
+            }
             if (indent_lvl < 4) indent_lvl = 0;
             else indent_lvl -= 4;
         } else if (item.starts_with("\\item")) is_item = true;
@@ -475,7 +496,15 @@ void Parser::Format() {
         NextToken();
     }
     MergeTextNodes(tokens, false);
-    for (auto& item : FormatPass2(FormatPass1(std::move(tokens), line_width)))
+
+    /// List of environments that should be indented like enumerate.
+    std::vector<std::string> enumerate_envs = {"enumerate", "itemize"};
+    if (opts.has<"--enumerate-env">()) {
+        auto envs = opts.get<"--enumerate-env">();
+        enumerate_envs.insert(enumerate_envs.end(), envs.begin(), envs.end());
+    }
+
+    for (auto& item : FormatPass2(FormatPass1(std::move(tokens), line_width), std::move(enumerate_envs)))
         fprintf(output_file, "%s\n", item.c_str());
 }
 

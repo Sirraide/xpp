@@ -21,7 +21,7 @@ Macro::Macro(NodeList _replacement) : replacement(std::move(_replacement)) {}
 Macro::Macro(std::vector<NodeList> _delimiters, NodeList _replacement)
     : replacement(std::move(_replacement)), delimiters(std::move(_delimiters)) {}
 
-Parser::Parser(const options::parsed_options& _opts) : LexerBase(_opts.get<"-f">()), opts(_opts) {
+Parser::Parser(options::parsed_options _opts) : LexerBase(_opts.get<"-f">()), opts(_opts) {
     if (opts.has<"-o">()) output_file = fopen(opts.get<"-o">().c_str(), "w");
     else output_file = stdout;
     if (!output_file) Die("Could not open output file: %s", strerror(errno));

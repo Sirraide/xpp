@@ -336,6 +336,17 @@ void Parser::ConstructText(NodeList& nodes) {
                 else processed_text += node.string_content;
                 continue;
             case EndOfFile: return;
+            case MacroArg: {
+                auto num = node.number;
+                processed_text += U"#";
+
+                if (num >= 10) {
+                    num -= 10;
+                    processed_text += U"#";
+                }
+
+                processed_text += ToUTF32(std::to_string(num));
+            } break;
             case Macro:
                 Unreachable("ConstructText: Macro should have been removed from NodeList");
             default:

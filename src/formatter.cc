@@ -210,10 +210,21 @@ auto Parser::FormatPass1(NodeList&& tokens, U64 line_width) -> std::string {
             case T::EndOfFile:
             case T::Invalid: Die("Invalid token");
             case T::Text:
-            case T::MacroArg:
                 output += ToUTF8(tokens[tok_index].string_content);
                 col += tokens[tok_index].string_content.size();
                 break;
+            case T::MacroArg: {
+                std::string arg{"#"};
+                auto num = tokens[tok_index].number;
+                if (num >= 10) {
+                    num -= 10;
+                    arg += "#";
+                }
+
+                arg += std::to_string(num);
+                col += arg.size();
+                output += arg;
+            } break;
             case T::CommandSequence:
             case T::Macro:
                 if (const auto& s = tokens[tok_index].string_content; s == U"\\item" && col != 0) {

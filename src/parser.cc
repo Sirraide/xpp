@@ -21,22 +21,19 @@ Macro::Macro(NodeList _replacement) : replacement(std::move(_replacement)) {}
 Macro::Macro(std::vector<NodeList> _delimiters, NodeList _replacement)
     : replacement(std::move(_replacement)), delimiters(std::move(_delimiters)) {}
 
-Parser::Parser(options::parsed_options _opts) : LexerBase(_opts.get<"-f">()), opts(_opts) {
-    if (opts.has<"-o">()) output_file = fopen(opts.get<"-o">().c_str(), "w");
+Parser::Parser() : LexerBase(*options::get<"file">()) {
+    if (auto out = options::get<"-o">()) output_file = fopen(out->c_str(), "w");
     else output_file = stdout;
     if (!output_file) Die("Could not open output file: %s", strerror(errno));
 
-    if (opts.has<"--line-width">()) {
-        I64 lw     = opts.get<"--line-width">();
-        line_width = lw < 20 ? 100 : U64(lw);
-    }
+    if (auto lw = options::get<"--line-width">()) line_width = *lw < 20 ? 100 : U64(*lw);
 
     Parser::NextChar();
     Parser::NextToken();
-    if (opts.has<"--print-tokens">()) {
+    if (options::get<"--print-tokens">()) {
         Parser::PrintAllTokens(output_file);
         exit(0);
-    } else if (opts.has<"--wc">()) {
+    } else if (options::get<"--wc">()) {
         U64         chars{};
         U64         words = 1;
         std::string text;
@@ -51,7 +48,7 @@ Parser::Parser(options::parsed_options _opts) : LexerBase(_opts.get<"-f">()), op
         std::cout << "Number of words:      " << words << "\n";
         exit(0);
     }
-    if (opts.has<"--format">()) {
+    if (options::get<"--format">()) {
         Parser::Format();
         exit(0);
     }

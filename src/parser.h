@@ -49,17 +49,15 @@ struct Macro {
 namespace cl = command_line_options;
 struct Parser : public AbstractLexer {
     using options = cl::clopts<
+        cl::positional<"file", "The file to process", std::string>,
         cl::option<"-o", "The file to output to">,
-        cl::option<"-f", "The file to process", std::string, true>,
-        cl::option<"--line-width", "The maxiumum line width", I64>,
+        cl::option<"--line-width", "The maximum line width", I64>,
         cl::multiple<cl::option<"--enumerate-env", "Define an environment to be indented like enumerate">>,
         cl::flag<"--print-tokens", "Print all tokens to stdout and exit">,
         cl::flag<"--wc", "Count the number of characters and words in the file">,
         cl::flag<"--format", "Format a file instead of preprocessing it">,
         cl::help>;
-    options::parsed_options opts;
 
-    explicit Parser(options::parsed_options _opts);
     FILE*                   output_file;
     std::map<String, Macro> macros;
     ReplacementRules        rep_rules;
@@ -69,6 +67,8 @@ struct Parser : public AbstractLexer {
     U64                     line_width = 100;
     std::queue<Node>        lookahead_queue;
     String                  processed_text;
+
+    explicit Parser();
 
     void ApplyReplacementRules(String& str);
     void ApplyRawReplacementRules();

@@ -510,9 +510,8 @@ void Parser::Format() {
 
     /// List of environments that should be indented like enumerate.
     std::vector<std::string> enumerate_envs = {"enumerate", "itemize"};
-    if (opts.has<"--enumerate-env">()) {
-        auto envs = opts.get<"--enumerate-env">();
-        enumerate_envs.insert(enumerate_envs.end(), envs.begin(), envs.end());
+    if (auto envs = options::get<"--enumerate-env">()) {
+        enumerate_envs.insert(enumerate_envs.end(), envs->begin(), envs->end());
     }
 
     for (auto& item : FormatPass2(FormatPass1(std::move(tokens), line_width), std::move(enumerate_envs)))

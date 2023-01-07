@@ -1,0 +1,3 @@
+\Replace|--|–|
+\RegexReplace|(\d)(–)(\d)|$1\endash$3|
+\def\endash{\kern1pt–\kern1pt}
